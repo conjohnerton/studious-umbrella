@@ -1,11 +1,11 @@
 use std::{collections::HashMap, env, fs::File};
 
-use anyhow::{bail, Context, Result};
+use anyhow::Result;
 use csv::{self, Trim};
 use rust_decimal::Decimal;
 use serde::Deserialize;
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone)]
 enum TransactionType {
     #[serde(rename = "deposit")]
     Deposit,
@@ -25,12 +25,37 @@ enum TransactionType {
 type Client = u16;
 type TransactionId = u32;
 type Amount = Decimal;
-type Transaction = (TransactionType, Client, TransactionId, Amount);
 struct Account {
     available: Amount,
     held: Amount,
     total: Amount,
     locked: bool,
+}
+
+#[derive(Deserialize)]
+struct Transaction {
+    #[serde(rename = "type")]
+    tx_type: TransactionType,
+    client: Client,
+    tx: TransactionId,
+    amount: Option<Amount>,
+}
+impl Transaction {
+    pub fn tx_type(&self) -> TransactionType {
+        self.tx_type.clone()
+    }
+
+    pub fn client(&self) -> Client {
+        self.client
+    }
+
+    pub fn tx(&self) -> TransactionId {
+        self.tx
+    }
+
+    pub fn amount(&self) -> Option<Decimal> {
+        self.amount
+    }
 }
 
 fn try_main() -> Result<()> {
@@ -41,26 +66,38 @@ fn try_main() -> Result<()> {
     };
 
     let file = File::open(file_name)?;
-    let mut csv_reader = csv::ReaderBuilder::new().trim(Trim::All).from_reader(file);
+    let mut csv_reader = csv::ReaderBuilder::new()
+        .flexible(true)
+        .trim(Trim::All)
+        .from_reader(file);
 
     let mut client_accounts: HashMap<Client, Account> = HashMap::new();
     let mut transaction_amounts: HashMap<TransactionId, Amount> = HashMap::new();
 
     for group in csv_reader.deserialize() {
-        let (tx_type, client, tx, amount): Transaction =
-            group.context("Could not get record from result group")?;
-        // println!("{:?}", tx_type);
-        // println!("{:?}", client);
-        // println!("{:?}", tx);
-        // println!("{:?}", amount);
+        let transaction: Transaction = group.unwrap();
+        // println!("{:?}", transaction.tx_type());
+        // println!("{:?}", transaction.client());
+        // println!("{:?}", transaction.tx());
+        // println!("{:?}", transaction.amount());
 
-        match tx_type {
+        match transaction.tx_type() {
             TransactionType::Deposit => {
-                transaction_amounts.insert(tx, amount);
+                let amount = transaction.amount().unwrap();
+                transaction_amounts.insert(transaction.tx(), amount);
 
-                match client_accounts.get(&client) {
+                match client_accounts.get(&transaction.client()) {
+                    Some(account) => client_accounts.insert(
+                        transaction.client(),
+                        Account {
+                            available: account.available + amount,
+                            held: account.held,
+                            total: account.total + amount,
+                            locked: account.locked,
+                        },
+                    ),
                     None => client_accounts.insert(
-                        client,
+                        transaction.client(),
                         Account {
                             available: amount,
                             held: Amount::default(),
@@ -68,32 +105,22 @@ fn try_main() -> Result<()> {
                             locked: false,
                         },
                     ),
-                    Some(account) => client_accounts.insert(
-                        client,
-                        Account {
-                            available: account.available + amount,
-                            held: account.held,
-                            total: account.total+ amount,
-                            locked: account.locked,
-                        },
-                    ),
                 };
             }
             TransactionType::Withdrawal => {
-                transaction_amounts.insert(tx, amount);
+                let amount = transaction.amount().unwrap();
+                transaction_amounts.insert(transaction.tx(), amount);
 
-                match client_accounts.get(&client) {
-                    None => (),
+                match client_accounts.get(&transaction.client()) {
                     Some(account) => {
                         let available_after_withdrawal = (account.available - amount).round_dp(4);
                         let total_after_withdrawal = (account.total - amount).round_dp(4);
 
                         if available_after_withdrawal < Amount::ZERO {
-                            // bail!("Rejected")
                             ()
                         } else {
                             client_accounts.insert(
-                                client,
+                                transaction.client(),
                                 Account {
                                     available: available_after_withdrawal,
                                     held: account.held,
@@ -104,13 +131,52 @@ fn try_main() -> Result<()> {
                             ()
                         }
                     }
+                    None => (),
                 };
             }
             TransactionType::Dispute => {
-                // transaction_amounts.get(tx)
+                match transaction_amounts.get(&transaction.tx()) {
+                    Some(dispute_amount) => match client_accounts.get(&transaction.client()) {
+                        Some(account) => {
+                            client_accounts.insert(
+                                transaction.client(),
+                                Account {
+                                    available: account.available - dispute_amount,
+                                    held: account.held + dispute_amount,
+                                    total: account.total,
+                                    locked: account.locked,
+                                },
+                            );
+                            ()
+                        }
+                        None => (),
+                    },
+                    None => (),
+                };
             }
-            TransactionType::Resolve => {}
-            TransactionType::Chargeback => {}
+            TransactionType::Resolve => {
+                match transaction_amounts.get(&transaction.tx()) {
+                    Some(dispute_amount) => match client_accounts.get(&transaction.client()) {
+                        Some(account) => {
+                            client_accounts.insert(
+                                transaction.client(),
+                                Account {
+                                    available: account.available + dispute_amount,
+                                    held: account.held - dispute_amount,
+                                    total: account.total,
+                                    locked: account.locked,
+                                },
+                            );
+                            ()
+                        }
+                        None => (),
+                    },
+                    None => (),
+                };
+            }
+            TransactionType::Chargeback => {
+                
+            }
         };
     }
 
@@ -123,7 +189,10 @@ fn print_output(client_account: HashMap<Client, Account>) {
     println!("client, available, held, total, locked");
 
     for (client, account) in client_account {
-        println!("{}, {}, {}, {}, {}", client, account.available, account.held, account.total, account.locked);
+        println!(
+            "{}, {}, {}, {}, {}",
+            client, account.available, account.held, account.total, account.locked
+        );
     }
 }
 
