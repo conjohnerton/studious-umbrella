@@ -116,14 +116,14 @@ fn try_main() -> Result<()> {
             }
             TransactionType::Withdrawal => {
                 let amount = transaction.amount().unwrap();
-                transaction_info.insert(transaction.tx(), (amount, false));
+                transaction_info.insert(transaction.tx(), (-amount, false));
 
                 match client_accounts.get(&transaction.client()) {
                     Some(account) => {
                         if account.locked {
                             continue
                         }
-                        
+
                         let available_after_withdrawal = (account.available - amount).round_dp(4);
                         let total_after_withdrawal = (account.total - amount).round_dp(4);
 
