@@ -1,63 +1,11 @@
+mod types;
+
 use std::{collections::HashMap, env, fs::File};
 
 use anyhow::Result;
 use csv::{self, Trim};
-use rust_decimal::Decimal;
-use serde::Deserialize;
 
-#[derive(Deserialize, Debug, Clone)]
-enum TransactionType {
-    #[serde(rename = "deposit")]
-    Deposit,
-
-    #[serde(rename = "withdrawal")]
-    Withdrawal,
-
-    #[serde(rename = "dispute")]
-    Dispute,
-
-    #[serde(rename = "resolve")]
-    Resolve,
-
-    #[serde(rename = "chargeback")]
-    Chargeback,
-}
-type Client = u16;
-type TransactionId = u32;
-type Amount = Decimal;
-type TransactionInfo = (Amount, bool);
-struct Account {
-    available: Amount,
-    held: Amount,
-    total: Amount,
-    locked: bool,
-}
-
-#[derive(Deserialize)]
-struct Transaction {
-    #[serde(rename = "type")]
-    tx_type: TransactionType,
-    client: Client,
-    tx: TransactionId,
-    amount: Option<Amount>,
-}
-impl Transaction {
-    pub fn tx_type(&self) -> TransactionType {
-        self.tx_type.clone()
-    }
-
-    pub fn client(&self) -> Client {
-        self.client
-    }
-
-    pub fn tx(&self) -> TransactionId {
-        self.tx
-    }
-
-    pub fn amount(&self) -> Option<Decimal> {
-        self.amount
-    }
-}
+use types::*;
 
 fn try_main() -> Result<()> {
     let args = env::args().collect::<Vec<String>>();
@@ -79,139 +27,14 @@ fn try_main() -> Result<()> {
         let transaction: Transaction = group.unwrap();
 
         match transaction.tx_type() {
-            TransactionType::Deposit => {
-                let amount = transaction.amount().unwrap();
-                transaction_info.insert(transaction.tx(), (amount, false));
-
-                match client_accounts.get(&transaction.client()) {
-                    Some(account) => {
-                        if account.locked {
-                            continue
-                        }
-
-                        client_accounts.insert(
-                            transaction.client(),
-                            Account {
-                                available: account.available + amount,
-                                held: account.held,
-                                total: account.total + amount,
-                                locked: account.locked,
-                            },
-                        );
-                        ()
-                    }
-                    None => {
-                        client_accounts.insert(
-                            transaction.client(),
-                            Account {
-                                available: amount,
-                                held: Amount::default(),
-                                total: amount,
-                                locked: false,
-                            },
-                        );
-                        ()
-                    }
-                };
-            }
+            TransactionType::Deposit => deposit(transaction, &mut client_accounts, &mut transaction_info),
             TransactionType::Withdrawal => {
-                let amount = transaction.amount().unwrap();
-                transaction_info.insert(transaction.tx(), (-amount, false));
-
-                match client_accounts.get(&transaction.client()) {
-                    Some(account) => {
-                        if account.locked {
-                            continue
-                        }
-
-                        let available_after_withdrawal = (account.available - amount).round_dp(4);
-                        let total_after_withdrawal = (account.total - amount).round_dp(4);
-
-                        if available_after_withdrawal < Amount::ZERO {
-                            ()
-                        } else {
-                            client_accounts.insert(
-                                transaction.client(),
-                                Account {
-                                    available: available_after_withdrawal,
-                                    held: account.held,
-                                    total: total_after_withdrawal,
-                                    locked: account.locked,
-                                },
-                            );
-                            ()
-                        }
-                    }
-                    None => (),
-                };
+                withdrawal(transaction, &mut client_accounts, &mut transaction_info)
             }
-            TransactionType::Dispute => {
-                match transaction_info.get(&transaction.tx()) {
-                    Some(&(dispute_amount, false)) => {
-                        match client_accounts.get(&transaction.client()) {
-                            Some(account) => {
-                                transaction_info.insert(transaction.tx(), (dispute_amount, true));
-                                client_accounts.insert(
-                                    transaction.client(),
-                                    Account {
-                                        available: account.available - dispute_amount,
-                                        held: account.held + dispute_amount,
-                                        total: account.total,
-                                        locked: account.locked,
-                                    },
-                                );
-                                ()
-                            }
-                            None => (),
-                        }
-                    }
-                    _ => (),
-                };
-            }
-            TransactionType::Resolve => {
-                match transaction_info.get(&transaction.tx()) {
-                    Some(&(dispute_amount, true)) => {
-                        match client_accounts.get(&transaction.client()) {
-                            Some(account) => {
-                                transaction_info.insert(transaction.tx(), (dispute_amount, false));
-                                client_accounts.insert(
-                                    transaction.client(),
-                                    Account {
-                                        available: account.available + dispute_amount,
-                                        held: account.held - dispute_amount,
-                                        total: account.total,
-                                        locked: account.locked,
-                                    },
-                                );
-                                ()
-                            }
-                            None => (),
-                        }
-                    }
-                    _ => (),
-                };
-            }
+            TransactionType::Dispute => dispute(transaction, &mut client_accounts, &mut transaction_info),
+            TransactionType::Resolve => resolve(transaction, &mut client_accounts, &mut transaction_info),
             TransactionType::Chargeback => {
-                match transaction_info.get(&transaction.tx()) {
-                    Some((dispute_amount, true)) => {
-                        match client_accounts.get(&transaction.client()) {
-                            Some(account) => {
-                                client_accounts.insert(
-                                    transaction.client(),
-                                    Account {
-                                        available: account.available,
-                                        held: account.held - dispute_amount,
-                                        total: account.total - dispute_amount,
-                                        locked: true,
-                                    },
-                                );
-                                ()
-                            }
-                            None => (),
-                        }
-                    }
-                    _ => (),
-                };
+                chargeback(transaction, &mut client_accounts, &mut transaction_info)
             }
         };
     }
@@ -219,6 +42,159 @@ fn try_main() -> Result<()> {
     print_output(client_accounts);
 
     Ok(())
+}
+
+fn chargeback(
+    transaction: Transaction,
+    client_accounts: &mut HashMap<Client, Account>,
+    transaction_info: &mut HashMap<TransactionId, TransactionInfo>,
+) {
+    match transaction_info.get(&transaction.tx()) {
+        Some((dispute_amount, true)) => match client_accounts.get(&transaction.client()) {
+            Some(account) => {
+                client_accounts.insert(
+                    transaction.client(),
+                    Account {
+                        available: account.available,
+                        held: account.held - dispute_amount,
+                        total: account.total - dispute_amount,
+                        locked: true,
+                    },
+                );
+                ()
+            }
+            None => (),
+        },
+        _ => (),
+    };
+}
+
+fn resolve(
+    transaction: Transaction,
+    client_accounts: &mut HashMap<Client, Account>,
+    transaction_info: &mut HashMap<TransactionId, TransactionInfo>,
+) {
+    match transaction_info.get(&transaction.tx()) {
+        Some(&(dispute_amount, true)) => match client_accounts.get(&transaction.client()) {
+            Some(account) => {
+                transaction_info.insert(transaction.tx(), (dispute_amount, false));
+                client_accounts.insert(
+                    transaction.client(),
+                    Account {
+                        available: account.available + dispute_amount,
+                        held: account.held - dispute_amount,
+                        total: account.total,
+                        locked: account.locked,
+                    },
+                );
+                ()
+            }
+            None => (),
+        },
+        _ => (),
+    };
+}
+
+fn dispute(
+    transaction: Transaction,
+    client_accounts: &mut HashMap<Client, Account>,
+    transaction_info: &mut HashMap<TransactionId, TransactionInfo>,
+) {
+    match transaction_info.get(&transaction.tx()) {
+        Some(&(dispute_amount, false)) => match client_accounts.get(&transaction.client()) {
+            Some(account) => {
+                transaction_info.insert(transaction.tx(), (dispute_amount, true));
+                client_accounts.insert(
+                    transaction.client(),
+                    Account {
+                        available: account.available - dispute_amount,
+                        held: account.held + dispute_amount,
+                        total: account.total,
+                        locked: account.locked,
+                    },
+                );
+                ()
+            }
+            None => (),
+        },
+        _ => (),
+    };
+}
+
+fn withdrawal(
+    transaction: Transaction,
+    client_accounts: &mut HashMap<Client, Account>,
+    transaction_info: &mut HashMap<TransactionId, TransactionInfo>,
+) {
+    let amount = transaction.amount().unwrap();
+    transaction_info.insert(transaction.tx(), (-amount, false));
+
+    match client_accounts.get(&transaction.client()) {
+        Some(account) => {
+            if account.locked {
+                return;
+            }
+
+            let available_after_withdrawal = (account.available - amount).round_dp(4);
+            let total_after_withdrawal = (account.total - amount).round_dp(4);
+
+            if available_after_withdrawal < Amount::ZERO {
+                ()
+            } else {
+                client_accounts.insert(
+                    transaction.client(),
+                    Account {
+                        available: available_after_withdrawal,
+                        held: account.held,
+                        total: total_after_withdrawal,
+                        locked: account.locked,
+                    },
+                );
+                ()
+            }
+        }
+        None => (),
+    };
+}
+
+fn deposit(
+    transaction: Transaction,
+    client_accounts: &mut HashMap<Client, Account>,
+    transaction_info: &mut HashMap<TransactionId, TransactionInfo>,
+) {
+    let amount = transaction.amount().unwrap();
+    transaction_info.insert(transaction.tx(), (amount, false));
+
+    match client_accounts.get(&transaction.client()) {
+        Some(account) => {
+            if account.locked {
+                return;
+            }
+
+            client_accounts.insert(
+                transaction.client(),
+                Account {
+                    available: account.available + amount,
+                    held: account.held,
+                    total: account.total + amount,
+                    locked: account.locked,
+                },
+            );
+            ()
+        }
+        None => {
+            client_accounts.insert(
+                transaction.client(),
+                Account {
+                    available: amount,
+                    held: Amount::default(),
+                    total: amount,
+                    locked: false,
+                },
+            );
+            ()
+        }
+    };
 }
 
 fn print_output(client_account: HashMap<Client, Account>) {
