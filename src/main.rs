@@ -55,24 +55,24 @@ fn chargeback(
     client_accounts: &mut HashMap<Client, Account>,
     transaction_info: &mut HashMap<TransactionId, TransactionInfo>,
 ) {
-    match transaction_info.get(&transaction.tx()) {
-        Some((dispute_amount, true)) => match client_accounts.get(&transaction.client()) {
-            Some(account) => {
-                client_accounts.insert(
-                    transaction.client(),
-                    Account {
-                        available: account.available,
-                        held: account.held - dispute_amount,
-                        total: account.total - dispute_amount,
-                        locked: true,
-                    },
-                );
-                ()
+    if let Some(&(dispute_amount, true)) = transaction_info.get(&transaction.tx()) {
+        if let Some(account) = client_accounts.get(&transaction.client()) {
+            if account.locked {
+                return;
             }
-            None => (),
-        },
-        _ => (),
-    };
+
+            transaction_info.insert(transaction.tx(), (dispute_amount, false));
+            client_accounts.insert(
+                transaction.client(),
+                Account {
+                    available: account.available,
+                    held: account.held - dispute_amount,
+                    total: account.total - dispute_amount,
+                    locked: true,
+                },
+            );
+        }
+    }
 }
 
 fn resolve(
@@ -80,25 +80,24 @@ fn resolve(
     client_accounts: &mut HashMap<Client, Account>,
     transaction_info: &mut HashMap<TransactionId, TransactionInfo>,
 ) {
-    match transaction_info.get(&transaction.tx()) {
-        Some(&(dispute_amount, true)) => match client_accounts.get(&transaction.client()) {
-            Some(account) => {
-                transaction_info.insert(transaction.tx(), (dispute_amount, false));
-                client_accounts.insert(
-                    transaction.client(),
-                    Account {
-                        available: account.available + dispute_amount,
-                        held: account.held - dispute_amount,
-                        total: account.total,
-                        locked: account.locked,
-                    },
-                );
-                ()
+    if let Some(&(dispute_amount, true)) = transaction_info.get(&transaction.tx()) {
+        if let Some(account) = client_accounts.get(&transaction.client()) {
+            if account.locked {
+                return;
             }
-            None => (),
-        },
-        _ => (),
-    };
+
+            transaction_info.insert(transaction.tx(), (dispute_amount, false));
+            client_accounts.insert(
+                transaction.client(),
+                Account {
+                    available: account.available + dispute_amount,
+                    held: account.held - dispute_amount,
+                    total: account.total,
+                    locked: account.locked,
+                },
+            );
+        }
+    }
 }
 
 fn dispute(
@@ -106,32 +105,29 @@ fn dispute(
     client_accounts: &mut HashMap<Client, Account>,
     transaction_info: &mut HashMap<TransactionId, TransactionInfo>,
 ) {
-    match transaction_info.get(&transaction.tx()) {
-        Some(&(dispute_amount, false)) => {
-            // Reject disputes of withdrawal, since that's not something we can handle
-            if dispute_amount < Amount::ZERO {
+    if let Some(&(dispute_amount, false)) = transaction_info.get(&transaction.tx()) {
+        // Reject disputes of withdrawal, since that's not something we can handle
+        if dispute_amount < Amount::ZERO {
+            return;
+        }
+
+        if let Some(account) = client_accounts.get(&transaction.client()) {
+            if account.locked {
                 return;
             }
 
-            match client_accounts.get(&transaction.client()) {
-                Some(account) => {
-                    transaction_info.insert(transaction.tx(), (dispute_amount, true));
-                    client_accounts.insert(
-                        transaction.client(),
-                        Account {
-                            available: account.available - dispute_amount,
-                            held: account.held + dispute_amount,
-                            total: account.total,
-                            locked: account.locked,
-                        },
-                    );
-                    ()
-                }
-                None => (),
-            }
+            transaction_info.insert(transaction.tx(), (dispute_amount, true));
+            client_accounts.insert(
+                transaction.client(),
+                Account {
+                    available: account.available - dispute_amount,
+                    held: account.held + dispute_amount,
+                    total: account.total,
+                    locked: account.locked,
+                },
+            );
         }
-        _ => (),
-    };
+    }
 }
 
 fn withdrawal(
@@ -142,32 +138,26 @@ fn withdrawal(
     let amount = transaction.amount().unwrap();
     transaction_info.insert(transaction.tx(), (-amount, false));
 
-    match client_accounts.get(&transaction.client()) {
-        Some(account) => {
-            if account.locked {
-                return;
-            }
-
-            let available_after_withdrawal = (account.available - amount).round_dp(4);
-            let total_after_withdrawal = (account.total - amount).round_dp(4);
-
-            if available_after_withdrawal < Amount::ZERO {
-                ()
-            } else {
-                client_accounts.insert(
-                    transaction.client(),
-                    Account {
-                        available: available_after_withdrawal,
-                        held: account.held,
-                        total: total_after_withdrawal,
-                        locked: account.locked,
-                    },
-                );
-                ()
-            }
+    if let Some(account) = client_accounts.get(&transaction.client()) {
+        if account.locked {
+            return;
         }
-        None => (),
-    };
+
+        let available_after_withdrawal = (account.available - amount).round_dp(4);
+        let total_after_withdrawal = (account.total - amount).round_dp(4);
+
+        if available_after_withdrawal >= Amount::ZERO {
+            client_accounts.insert(
+                transaction.client(),
+                Account {
+                    available: available_after_withdrawal,
+                    held: account.held,
+                    total: total_after_withdrawal,
+                    locked: account.locked,
+                },
+            );
+        };
+    }
 }
 
 fn deposit(
@@ -193,7 +183,6 @@ fn deposit(
                     locked: account.locked,
                 },
             );
-            ()
         }
         None => {
             client_accounts.insert(
@@ -205,7 +194,6 @@ fn deposit(
                     locked: false,
                 },
             );
-            ()
         }
     };
 }
