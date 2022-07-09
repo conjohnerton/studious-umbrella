@@ -27,12 +27,18 @@ fn try_main() -> Result<()> {
         let transaction: Transaction = group.unwrap();
 
         match transaction.tx_type() {
-            TransactionType::Deposit => deposit(transaction, &mut client_accounts, &mut transaction_info),
+            TransactionType::Deposit => {
+                deposit(transaction, &mut client_accounts, &mut transaction_info)
+            }
             TransactionType::Withdrawal => {
                 withdrawal(transaction, &mut client_accounts, &mut transaction_info)
             }
-            TransactionType::Dispute => dispute(transaction, &mut client_accounts, &mut transaction_info),
-            TransactionType::Resolve => resolve(transaction, &mut client_accounts, &mut transaction_info),
+            TransactionType::Dispute => {
+                dispute(transaction, &mut client_accounts, &mut transaction_info)
+            }
+            TransactionType::Resolve => {
+                resolve(transaction, &mut client_accounts, &mut transaction_info)
+            }
             TransactionType::Chargeback => {
                 chargeback(transaction, &mut client_accounts, &mut transaction_info)
             }
@@ -101,22 +107,29 @@ fn dispute(
     transaction_info: &mut HashMap<TransactionId, TransactionInfo>,
 ) {
     match transaction_info.get(&transaction.tx()) {
-        Some(&(dispute_amount, false)) => match client_accounts.get(&transaction.client()) {
-            Some(account) => {
-                transaction_info.insert(transaction.tx(), (dispute_amount, true));
-                client_accounts.insert(
-                    transaction.client(),
-                    Account {
-                        available: account.available - dispute_amount,
-                        held: account.held + dispute_amount,
-                        total: account.total,
-                        locked: account.locked,
-                    },
-                );
-                ()
+        Some(&(dispute_amount, false)) => {
+            // Reject disputes of withdrawal, since that's not something we can handle
+            if dispute_amount < Amount::ZERO {
+                return;
             }
-            None => (),
-        },
+
+            match client_accounts.get(&transaction.client()) {
+                Some(account) => {
+                    transaction_info.insert(transaction.tx(), (dispute_amount, true));
+                    client_accounts.insert(
+                        transaction.client(),
+                        Account {
+                            available: account.available - dispute_amount,
+                            held: account.held + dispute_amount,
+                            total: account.total,
+                            locked: account.locked,
+                        },
+                    );
+                    ()
+                }
+                None => (),
+            }
+        }
         _ => (),
     };
 }
