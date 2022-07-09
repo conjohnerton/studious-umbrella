@@ -2,7 +2,7 @@ mod types;
 
 use std::{collections::HashMap, env, fs::File};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use csv::{self, Trim};
 
 use types::*;
@@ -28,24 +28,24 @@ fn try_main() -> Result<()> {
 
         match transaction.tx_type() {
             TransactionType::Deposit => {
-                deposit(transaction, &mut client_accounts, &mut transaction_info)
+                deposit(transaction, &mut client_accounts, &mut transaction_info)?
             }
             TransactionType::Withdrawal => {
-                withdrawal(transaction, &mut client_accounts, &mut transaction_info)
+                withdrawal(transaction, &mut client_accounts, &mut transaction_info)?
             }
             TransactionType::Dispute => {
-                dispute(transaction, &mut client_accounts, &mut transaction_info)
+                dispute(transaction, &mut client_accounts, &mut transaction_info)?
             }
             TransactionType::Resolve => {
-                resolve(transaction, &mut client_accounts, &mut transaction_info)
+                resolve(transaction, &mut client_accounts, &mut transaction_info)?
             }
             TransactionType::Chargeback => {
-                chargeback(transaction, &mut client_accounts, &mut transaction_info)
+                chargeback(transaction, &mut client_accounts, &mut transaction_info)?
             }
         };
     }
 
-    print_output(client_accounts);
+    print_output(client_accounts).context("Could not print output")?;
 
     Ok(())
 }
@@ -54,11 +54,11 @@ fn chargeback(
     transaction: Transaction,
     client_accounts: &mut HashMap<Client, Account>,
     transaction_info: &mut HashMap<TransactionId, TransactionInfo>,
-) {
+) -> Result<()> {
     if let Some(&(dispute_amount, true)) = transaction_info.get(&transaction.tx()) {
         if let Some(account) = client_accounts.get(&transaction.client()) {
             if account.locked {
-                return;
+                return Ok(());
             }
 
             transaction_info.insert(transaction.tx(), (dispute_amount, false));
@@ -73,17 +73,19 @@ fn chargeback(
             );
         }
     }
+
+    Ok(())
 }
 
 fn resolve(
     transaction: Transaction,
     client_accounts: &mut HashMap<Client, Account>,
     transaction_info: &mut HashMap<TransactionId, TransactionInfo>,
-) {
+) -> Result<()> {
     if let Some(&(dispute_amount, true)) = transaction_info.get(&transaction.tx()) {
         if let Some(account) = client_accounts.get(&transaction.client()) {
             if account.locked {
-                return;
+                return Ok(());
             }
 
             transaction_info.insert(transaction.tx(), (dispute_amount, false));
@@ -98,22 +100,24 @@ fn resolve(
             );
         }
     }
+
+    Ok(())
 }
 
 fn dispute(
     transaction: Transaction,
     client_accounts: &mut HashMap<Client, Account>,
     transaction_info: &mut HashMap<TransactionId, TransactionInfo>,
-) {
+) -> Result<()> {
     if let Some(&(dispute_amount, false)) = transaction_info.get(&transaction.tx()) {
         // Reject disputes of withdrawal, since that's not something we can handle
         if dispute_amount < Amount::ZERO {
-            return;
+            return Ok(());
         }
 
         if let Some(account) = client_accounts.get(&transaction.client()) {
             if account.locked {
-                return;
+                return Ok(());
             }
 
             transaction_info.insert(transaction.tx(), (dispute_amount, true));
@@ -128,19 +132,21 @@ fn dispute(
             );
         }
     }
+
+    Ok(())
 }
 
 fn withdrawal(
     transaction: Transaction,
     client_accounts: &mut HashMap<Client, Account>,
     transaction_info: &mut HashMap<TransactionId, TransactionInfo>,
-) {
+) -> Result<()> {
     let amount = transaction.amount().unwrap();
     transaction_info.insert(transaction.tx(), (-amount, false));
 
     if let Some(account) = client_accounts.get(&transaction.client()) {
         if account.locked {
-            return;
+            return Ok(());
         }
 
         let available_after_withdrawal = (account.available - amount).round_dp(4);
@@ -158,20 +164,22 @@ fn withdrawal(
             );
         };
     }
+
+    Ok(())
 }
 
 fn deposit(
     transaction: Transaction,
     client_accounts: &mut HashMap<Client, Account>,
     transaction_info: &mut HashMap<TransactionId, TransactionInfo>,
-) {
+) -> Result<()> {
     let amount = transaction.amount().unwrap();
     transaction_info.insert(transaction.tx(), (amount, false));
 
     match client_accounts.get(&transaction.client()) {
         Some(account) => {
             if account.locked {
-                return;
+                return Ok(());
             }
 
             client_accounts.insert(
@@ -196,9 +204,11 @@ fn deposit(
             );
         }
     };
+
+    Ok(())
 }
 
-fn print_output(client_account: HashMap<Client, Account>) {
+fn print_output(client_account: HashMap<Client, Account>) -> Result<()> {
     println!("client, available, held, total, locked");
 
     for (client, account) in client_account {
@@ -207,12 +217,14 @@ fn print_output(client_account: HashMap<Client, Account>) {
             client, account.available, account.held, account.total, account.locked
         );
     }
+
+    Ok(())
 }
 
 fn main() {
     if let Err(err) = try_main() {
-        println!("ERROR: {}", err);
-        // err.chain().skip(1).for_each(|cause| eprintln!("because: {}", cause));
+        eprintln!("ERROR: {}", err);
+        err.chain().for_each(|cause| eprintln!("cause: {}", cause));
         std::process::exit(1);
     }
 }
